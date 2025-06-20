@@ -1,66 +1,96 @@
 import tkinter as tk
-from tkinter import scrolledtext
-from scapy.all import sniff, IP, TCP, UDP
+from scapy.all import sniff, IP, TCP, UDP, DNS
+from collections import defaultdict
 import threading
 import time
-
-# Track SYN and UDP packets from IPs
-syn_packets = {}
-udp_packets = {}
+from datetime import datetime
 
 # Thresholds
-SYN_THRESHOLD = 20
-UDP_THRESHOLD = 100
-TIME_WINDOW = 10  # seconds
+SYN_THRESHOLD = 10
+UDP_THRESHOLD = 15
+DNS_THRESHOLD = 10
 
-# GUI Setup
-root = tk.Tk()
-root.title("Intrusion Detection System")
-root.geometry("600x400")
+# Counters
+syn_count = defaultdict(int)
+udp_count = defaultdict(int)
+dns_count = defaultdict(int)
 
-log_display = scrolledtext.ScrolledText(root, width=70, height=20)
-log_display.pack(pady=10)
+# Reset every 10 seconds
+def reset_counters():
+    while True:
+        time.sleep(10)
+        syn_count.clear()
+        udp_count.clear()
+        dns_count.clear()
 
-status_label = tk.Label(root, text="Status: Monitoring for SYN and UDP flood attacks", fg="green")
-status_label.pack()
-
-# Utility to log messages in GUI
-def log_message(message):
-    log_display.insert(tk.END, message + "\n")
-    log_display.see(tk.END)
-
-# Packet Processing
+# Detection logic
 def process_packet(packet):
-    current_time = time.time()
-
-    if packet.haslayer(IP):
-        src_ip = packet[IP].src
-
-        # Detect SYN Flood (TCP with SYN flag)
+    if IP in packet:
+        ip_src = packet[IP].src
+        
         if packet.haslayer(TCP) and packet[TCP].flags == "S":
-            syn_packets.setdefault(src_ip, []).append(current_time)
-            syn_packets[src_ip] = [t for t in syn_packets[src_ip] if current_time - t <= TIME_WINDOW]
-            if len(syn_packets[src_ip]) > SYN_THRESHOLD:
-                log_message(f"[ALERT] SYN Flood Detected from {src_ip}!")
+            syn_count[ip_src] += 1
+            if syn_count[ip_src] > SYN_THRESHOLD:
+                log_alert(f"SYN Flood detected from {ip_src}")
 
-        # Detect UDP Flood
-        if packet.haslayer(UDP):
-            udp_packets.setdefault(src_ip, []).append(current_time)
-            udp_packets[src_ip] = [t for t in udp_packets[src_ip] if current_time - t <= TIME_WINDOW]
-            if len(udp_packets[src_ip]) > UDP_THRESHOLD:
-                log_message(f"[ALERT] UDP Flood Detected from {src_ip}!")
+        elif packet.haslayer(UDP):
+            udp_count[ip_src] += 1
+            if udp_count[ip_src] > UDP_THRESHOLD:
+                log_alert(f"UDP Flood detected from {ip_src}")
 
-# Sniffing Function
+            if packet[UDP].dport == 53 or packet[UDP].sport == 53:
+                if packet.haslayer(DNS):
+                    dns_count[ip_src] += 1
+                    if dns_count[ip_src] > DNS_THRESHOLD:
+                        log_alert(f"⚠️ DNS Amplification suspected from {ip_src}")
+
+# Log alerts to GUI
+def log_alert(msg):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    alert_box.insert(tk.END, f"[{timestamp}] {msg}\n")
+    alert_box.see(tk.END)
+
+# Sniffing function
 def start_sniffing():
+    log_alert("🔍 Packet sniffing started...\n")
     sniff(prn=process_packet, store=0)
 
-def run_sniffer_thread():
-    sniff_thread = threading.Thread(target=start_sniffing, daemon=True)
-    sniff_thread.start()
-    log_message("[INFO] Started packet sniffing...")
+# Hover effect for buttons
+def on_enter(e): e.widget['background'] = '#1abc9c'
+def on_leave(e): e.widget['background'] = '#00ffcc'
 
-# Start sniffing on GUI load
-run_sniffer_thread()
+# GUI setup
+app = tk.Tk()
+app.title("🛡️ Network Attack Detector")
+app.geometry("700x500")
+app.configure(bg="#121212")
 
-# Start GUI loop
-root.mainloop()
+# Title
+title = tk.Label(app, text="Network Attack Detector", font=("Helvetica", 20, "bold"), bg="#121212", fg="#00ffcc")
+title.pack(pady=20)
+
+# Alert box (scrollable)
+alert_frame = tk.Frame(app, bg="#121212")
+alert_frame.pack()
+
+scrollbar = tk.Scrollbar(alert_frame)
+scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+alert_box = tk.Text(
+    alert_frame, height=20, width=80, bg="#1e1e2e", fg="#ffffff",
+    font=("Courier New", 10), yscrollcommand=scrollbar.set, bd=0, wrap=tk.WORD
+)
+alert_box.pack(side=tk.LEFT, fill=tk.BOTH)
+scrollbar.config(command=alert_box.yview)
+
+# Start Button
+start_btn = tk.Button(app, text="🚀 Start Detection", font=("Arial", 12, "bold"), bg="#00ffcc", fg="black", padx=20, pady=8, borderwidth=0, command=lambda: threading.Thread(target=start_sniffing).start())
+start_btn.pack(pady=20)
+start_btn.bind("<Enter>", on_enter)
+start_btn.bind("<Leave>", on_leave)
+
+# Reset thread
+threading.Thread(target=reset_counters, daemon=True).start()
+
+# Run
+app.mainloop()
